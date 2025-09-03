@@ -89,6 +89,8 @@ public class PlayerSitEventHandler implements Listener {
 
         if(!gSitMain.getToggleService().canPlayerUsePlayerSit(player.getUniqueId()) || !gSitMain.getToggleService().canPlayerUsePlayerSit(highestPlayer.getUniqueId())) return;
 
+        if (player.getWorld().getName().equalsIgnoreCase("world_draft_city")) return;
+        
         gSitMain.getPlayerSitService().sitOnPlayer(player, highestPlayer);
     }
 
