@@ -9,7 +9,7 @@ import java.util.logging.Level;
 
 public class VersionService {
 
-    private final String LATEST_VERSION = "v1_21_6";
+    private final String LATEST_VERSION = "v1_21_9";
     private final HashMap<String, String> VERSION_MAPPING = new HashMap<>(); {
         VERSION_MAPPING.put("v1_18_1", "v1_18");
         VERSION_MAPPING.put("v1_19_2", "v1_19_1");
@@ -18,6 +18,8 @@ public class VersionService {
         VERSION_MAPPING.put("v1_20_6", "v1_20_5");
         VERSION_MAPPING.put("v1_21_1", "v1_21");
         VERSION_MAPPING.put("v1_21_3", "v1_21_2");
+        VERSION_MAPPING.put("v1_21_7", "v1_21_6");
+        VERSION_MAPPING.put("v1_21_8", "v1_21_6");
     }
     private final GSitMain gSitMain;
     private final String serverVersion;

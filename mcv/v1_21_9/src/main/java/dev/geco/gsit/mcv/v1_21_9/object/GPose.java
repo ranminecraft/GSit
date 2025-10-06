@@ -1,48 +1,40 @@
-package dev.geco.gsit.mcv.v1_19_3.object;
+package dev.geco.gsit.mcv.v1_21_9.object;
 
-import com.mojang.authlib.GameProfile;
 import com.mojang.datafixers.util.Pair;
 import dev.geco.gsit.GSitMain;
 import dev.geco.gsit.object.GSeat;
 import dev.geco.gsit.object.IGPose;
 import dev.geco.gsit.service.PoseService;
-import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.core.NonNullList;
-import net.minecraft.nbt.CompoundTag;
 import net.minecraft.network.protocol.Packet;
-import net.minecraft.network.protocol.game.ClientboundAddPlayerPacket;
+import net.minecraft.network.protocol.game.ClientGamePacketListener;
+import net.minecraft.network.protocol.game.ClientboundAddEntityPacket;
 import net.minecraft.network.protocol.game.ClientboundAnimatePacket;
-import net.minecraft.network.protocol.game.ClientboundBlockUpdatePacket;
+import net.minecraft.network.protocol.game.ClientboundBundlePacket;
 import net.minecraft.network.protocol.game.ClientboundMoveEntityPacket;
-import net.minecraft.network.protocol.game.ClientboundPlayerInfoRemovePacket;
-import net.minecraft.network.protocol.game.ClientboundPlayerInfoUpdatePacket;
 import net.minecraft.network.protocol.game.ClientboundRemoveEntitiesPacket;
 import net.minecraft.network.protocol.game.ClientboundRotateHeadPacket;
 import net.minecraft.network.protocol.game.ClientboundSetEntityDataPacket;
 import net.minecraft.network.protocol.game.ClientboundSetEquipmentPacket;
-import net.minecraft.network.protocol.game.ClientboundTeleportEntityPacket;
+import net.minecraft.network.protocol.game.ClientboundUpdateAttributesPacket;
 import net.minecraft.network.syncher.EntityDataSerializers;
 import net.minecraft.network.syncher.SynchedEntityData;
-import net.minecraft.server.MinecraftServer;
-import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.effect.MobEffects;
+import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.EquipmentSlot;
+import net.minecraft.world.entity.decoration.Mannequin;
 import net.minecraft.world.item.ItemStack;
-import net.minecraft.world.level.block.BedBlock;
-import net.minecraft.world.level.block.Blocks;
-import net.minecraft.world.level.block.state.properties.BedPart;
+import net.minecraft.world.item.component.ResolvableProfile;
 import org.bukkit.Bukkit;
 import org.bukkit.GameMode;
 import org.bukkit.Location;
 import org.bukkit.Sound;
 import org.bukkit.SoundCategory;
 import org.bukkit.Statistic;
-import org.bukkit.block.Block;
-import org.bukkit.craftbukkit.v1_19_R2.CraftServer;
-import org.bukkit.craftbukkit.v1_19_R2.CraftWorld;
-import org.bukkit.craftbukkit.v1_19_R2.entity.CraftPlayer;
+import org.bukkit.craftbukkit.entity.CraftEntity;
+import org.bukkit.craftbukkit.entity.CraftPlayer;
 import org.bukkit.entity.Player;
 import org.bukkit.entity.Pose;
 import org.bukkit.event.EventHandler;
@@ -62,13 +54,10 @@ import org.bukkit.event.player.PlayerInteractEvent;
 import org.bukkit.inventory.MainHand;
 
 import java.util.ArrayList;
-import java.util.Collections;
-import java.util.EnumSet;
 import java.util.HashSet;
 import java.util.List;
-import java.util.Optional;
+import java.util.OptionalInt;
 import java.util.Set;
-import java.util.UUID;
 
 public class GPose implements IGPose {
 
@@ -78,24 +67,19 @@ public class GPose implements IGPose {
     private final Pose pose;
     private Set<Player> nearbyPlayers = new HashSet<>();
     private final ServerPlayer serverPlayer;
-    protected final ServerPlayer playerNpc;
-    private final Location blockLocation;
-    private final Block bedBlock;
-    private final BlockPos bedPos;
+    protected final Mannequin mannequin;
+    private OptionalInt leftShoulderCache;
+    private OptionalInt rightShoulderCache;
     private final Direction direction;
-    protected ClientboundBlockUpdatePacket setBedPacket;
-    protected ClientboundPlayerInfoUpdatePacket addNpcInfoPacket;
-    protected ClientboundPlayerInfoRemovePacket removeNpcInfoPacket;
     protected ClientboundRemoveEntitiesPacket removeNpcPacket;
-    protected ClientboundAddPlayerPacket createNpcPacket;
+    protected ClientboundAddEntityPacket createNpcPacket;
     protected ClientboundSetEntityDataPacket metaNpcPacket;
-    protected ClientboundTeleportEntityPacket teleportNpcPacket;
-    protected ClientboundMoveEntityPacket.PosRot rotateNpcPacket;
+    protected ClientboundUpdateAttributesPacket attributeNpcPacket;
+    protected ClientboundBundlePacket bundle;
     private NonNullList<ItemStack> equipmentSlotCache;
     private net.minecraft.world.item.ItemStack mainSlotCache;
     private float directionCache;
     protected int renderRange;
-    private UUID taskId;
     private final Listener listener;
 
     public GPose(GSeat seat, Pose pose) {
@@ -108,22 +92,26 @@ public class GPose implements IGPose {
         renderRange = seatPlayer.getWorld().getSimulationDistance() * 16;
 
         Location seatLocation = seat.getLocation();
-        blockLocation = seatLocation.clone();
-        blockLocation.setY(blockLocation.getWorld().getMinHeight());
-        bedBlock = blockLocation.getBlock();
-        bedPos = new BlockPos(blockLocation.getBlockX(), blockLocation.getBlockY(), blockLocation.getBlockZ());
-
-        playerNpc = createNPC();
-        playerNpc.moveTo(seatLocation.getX(), seatLocation.getY() + (pose == org.bukkit.entity.Pose.SLEEPING ? 0.3125d : pose == org.bukkit.entity.Pose.SPIN_ATTACK ? 0.2d : 0d), seatLocation.getZ(), 0f, 0f);
 
         direction = getDirection();
-        if(pose == org.bukkit.entity.Pose.SLEEPING) setBedPacket = new ClientboundBlockUpdatePacket(bedPos, Blocks.WHITE_BED.defaultBlockState().setValue(BedBlock.FACING, direction.getOpposite()).setValue(BedBlock.PART, BedPart.HEAD));
-        addNpcInfoPacket = new ClientboundPlayerInfoUpdatePacket(EnumSet.of(ClientboundPlayerInfoUpdatePacket.Action.ADD_PLAYER, ClientboundPlayerInfoUpdatePacket.Action.INITIALIZE_CHAT, ClientboundPlayerInfoUpdatePacket.Action.UPDATE_GAME_MODE, ClientboundPlayerInfoUpdatePacket.Action.UPDATE_LATENCY, ClientboundPlayerInfoUpdatePacket.Action.UPDATE_DISPLAY_NAME), Collections.singletonList(playerNpc));
-        removeNpcInfoPacket = new ClientboundPlayerInfoRemovePacket(Collections.singletonList(playerNpc.getUUID()));
-        removeNpcPacket = new ClientboundRemoveEntitiesPacket(playerNpc.getId());
-        createNpcPacket = new ClientboundAddPlayerPacket(playerNpc);
-        if(pose == org.bukkit.entity.Pose.SLEEPING) teleportNpcPacket = new ClientboundTeleportEntityPacket(playerNpc);
-        if(pose == org.bukkit.entity.Pose.SPIN_ATTACK) rotateNpcPacket = new ClientboundMoveEntityPacket.PosRot(playerNpc.getId(), (short) 0, (short) 0, (short) 0, (byte) 0, getFixedRotation(-90f), true);
+
+        mannequin = createMannequin();
+        double scale = serverPlayer.getScale();
+        double offset = seatLocation.getY() + gSitMain.getSitService().getBaseOffset();
+        boolean isSleeping = pose == org.bukkit.entity.Pose.SLEEPING;
+        if(isSleeping) offset += 0.1125d * scale;
+        if(pose == org.bukkit.entity.Pose.SWIMMING) offset += -0.19 * scale;
+        float sleepYaw = direction == Direction.SOUTH ? 270 : direction == Direction.WEST ? 180 : direction == Direction.EAST ? 0 : 90;
+        mannequin.absSnapTo(
+            seatLocation.getX() + (isSleeping ? (direction == Direction.EAST ? 1.5 : direction == Direction.WEST ? -1.5 : 0) : 0),
+            offset,
+            seatLocation.getZ() + (isSleeping ? (direction == Direction.NORTH ? -1.5 : direction == Direction.SOUTH ? 1.5 : 0) : 0),
+            isSleeping ? sleepYaw : 0f,
+            pose == org.bukkit.entity.Pose.SPIN_ATTACK ? -90f : 0f
+        );
+
+        createNpcPacket = new ClientboundAddEntityPacket(mannequin.getId(), mannequin.getUUID(), mannequin.getX(), mannequin.getY(), mannequin.getZ(), mannequin.getXRot(), mannequin.getYRot(), mannequin.getType(), 0, mannequin.getDeltaMovement(), mannequin.getYHeadRot());
+        removeNpcPacket = new ClientboundRemoveEntitiesPacket(mannequin.getId());
 
         listener = new Listener() {
             @EventHandler(priority = EventPriority.LOWEST, ignoreCancelled = true)
@@ -136,13 +124,13 @@ public class GPose implements IGPose {
             public void entityDamageByEntityEvent(EntityDamageByEntityEvent Event) { if(Event.getDamager() == seatPlayer && !gSitMain.getConfigService().P_INTERACT) Event.setCancelled(true); }
 
             @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
-            public void entityDamageEvent(EntityDamageEvent Event) { if(Event.getEntity() == seatPlayer) playAnimation(1); }
+            public void entityDamageEvent(EntityDamageEvent Event) { if(Event.getEntity() == seatPlayer) playAnimation(ClientboundAnimatePacket.CRITICAL_HIT); }
 
             @EventHandler(priority = EventPriority.LOWEST, ignoreCancelled = true)
             public void projectileLaunchEvent(ProjectileLaunchEvent Event) { if(Event.getEntity().getShooter() == seatPlayer && !gSitMain.getConfigService().P_INTERACT) Event.setCancelled(true); }
 
             @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
-            public void playerAnimationEvent(PlayerAnimationEvent Event) { if(Event.getPlayer() == seatPlayer && Event.getAnimationType() == PlayerAnimationType.ARM_SWING) playAnimation(Event.getPlayer().getMainHand().equals(MainHand.RIGHT) ? 0 : 3); }
+            public void playerAnimationEvent(PlayerAnimationEvent Event) { if(Event.getPlayer() == seatPlayer && Event.getAnimationType() == PlayerAnimationType.ARM_SWING) playAnimation(Event.getPlayer().getMainHand().equals(MainHand.RIGHT) ? ClientboundAnimatePacket.SWING_MAIN_HAND : ClientboundAnimatePacket.SWING_OFF_HAND); }
 
             @EventHandler(priority = EventPriority.LOWEST, ignoreCancelled = true)
             public void inventoryClickEvent(InventoryClickEvent Event) { if(Event.getWhoClicked() == seatPlayer && seatPlayer.getGameMode() == GameMode.CREATIVE) Event.setCancelled(true); }
@@ -159,18 +147,17 @@ public class GPose implements IGPose {
     public void spawn() {
         nearbyPlayers = getNearbyPlayers();
 
-        playerNpc.setGlowingTag(serverPlayer.hasGlowingTag());
+        mannequin.setGlowingTag(serverPlayer.hasGlowingTag());
         if(serverPlayer.hasGlowingTag()) serverPlayer.setGlowingTag(false);
 
-        playerNpc.getEntityData().set(EntityDataSerializers.POSE.createAccessor(6), net.minecraft.world.entity.Pose.values()[pose.ordinal()]);
-        if(pose == Pose.SPIN_ATTACK) playerNpc.getEntityData().set(EntityDataSerializers.BYTE.createAccessor(8), (byte) 4);
-        if(pose == Pose.SLEEPING) playerNpc.getEntityData().set(EntityDataSerializers.OPTIONAL_BLOCK_POS.createAccessor(14), Optional.of(bedPos));
-        playerNpc.getEntityData().set(EntityDataSerializers.BYTE.createAccessor(17), serverPlayer.getEntityData().get(EntityDataSerializers.BYTE.createAccessor(17)));
-        playerNpc.getEntityData().set(EntityDataSerializers.BYTE.createAccessor(18), serverPlayer.getEntityData().get(EntityDataSerializers.BYTE.createAccessor(18)));
-        playerNpc.getEntityData().set(EntityDataSerializers.COMPOUND_TAG.createAccessor(19), serverPlayer.getEntityData().get(EntityDataSerializers.COMPOUND_TAG.createAccessor(19)));
-        playerNpc.getEntityData().set(EntityDataSerializers.COMPOUND_TAG.createAccessor(20), serverPlayer.getEntityData().get(EntityDataSerializers.COMPOUND_TAG.createAccessor(20)));
-        serverPlayer.getEntityData().set(EntityDataSerializers.COMPOUND_TAG.createAccessor(19), new CompoundTag());
-        serverPlayer.getEntityData().set(EntityDataSerializers.COMPOUND_TAG.createAccessor(20), new CompoundTag());
+        mannequin.setPose(net.minecraft.world.entity.Pose.values()[pose.ordinal()]);
+        if(pose == Pose.SPIN_ATTACK) mannequin.getEntityData().set(EntityDataSerializers.BYTE.createAccessor(8), (byte) 4);
+        mannequin.getEntityData().set(EntityDataSerializers.BYTE.createAccessor(15), serverPlayer.getEntityData().get(EntityDataSerializers.BYTE.createAccessor(15)));
+        mannequin.getEntityData().set(EntityDataSerializers.BYTE.createAccessor(16), serverPlayer.getEntityData().get(EntityDataSerializers.BYTE.createAccessor(16)));
+        leftShoulderCache = serverPlayer.getEntityData().get(EntityDataSerializers.OPTIONAL_UNSIGNED_INT.createAccessor(19));
+        rightShoulderCache = serverPlayer.getEntityData().get(EntityDataSerializers.OPTIONAL_UNSIGNED_INT.createAccessor(20));
+        serverPlayer.getEntityData().set(EntityDataSerializers.OPTIONAL_UNSIGNED_INT.createAccessor(19), OptionalInt.empty());
+        serverPlayer.getEntityData().set(EntityDataSerializers.OPTIONAL_UNSIGNED_INT.createAccessor(20), OptionalInt.empty());
 
         serverPlayer.setInvisible(true);
 
@@ -181,67 +168,22 @@ public class GPose implements IGPose {
             if(gSitMain.getConfigService().P_LAY_REST) seatPlayer.setStatistic(Statistic.TIME_SINCE_REST, 0);
         }
 
-        metaNpcPacket = new ClientboundSetEntityDataPacket(playerNpc.getId(), playerNpc.getEntityData().isDirty() ? playerNpc.getEntityData().packDirty() : playerNpc.getEntityData().getNonDefaultValues());
+        metaNpcPacket = new ClientboundSetEntityDataPacket(mannequin.getId(), mannequin.getEntityData().isDirty() ? mannequin.getEntityData().packDirty() : mannequin.getEntityData().getNonDefaultValues());
+        attributeNpcPacket = new ClientboundUpdateAttributesPacket(mannequin.getId(), serverPlayer.getAttributes().getSyncableAttributes());
+
+        List<Packet<? super ClientGamePacketListener>> packages = new ArrayList<>();
+
+        packages.add(createNpcPacket);
+        packages.add(metaNpcPacket);
+        packages.add(attributeNpcPacket);
+
+        bundle = new ClientboundBundlePacket(packages);
 
         for(Player nearbyPlayer : nearbyPlayers) addViewerPlayer(nearbyPlayer);
 
         Bukkit.getPluginManager().registerEvents(listener, gSitMain);
 
-        startUpdate();
-    }
-
-    private void addViewerPlayer(Player player) {
-        ServerPlayer spawnPlayer = ((CraftPlayer) player).getHandle();
-
-        sendPacket(spawnPlayer, addNpcInfoPacket);
-        sendPacket(spawnPlayer, createNpcPacket);
-        if(pose == Pose.SLEEPING) sendPacket(spawnPlayer, setBedPacket);
-        sendPacket(spawnPlayer, metaNpcPacket);
-        if(pose == Pose.SLEEPING) sendPacket(spawnPlayer, teleportNpcPacket);
-        if(pose == Pose.SPIN_ATTACK) sendPacket(spawnPlayer, rotateNpcPacket);
-
-        gSitMain.getTaskService().runDelayed(() -> {
-            sendPacket(spawnPlayer, removeNpcInfoPacket);
-        }, seatPlayer, 15);
-    }
-
-    @Override
-    public void remove() {
-        stopUpdate();
-
-        HandlerList.unregisterAll(listener);
-        seatPlayer.removeScoreboardTag(PoseService.POSE_TAG);
-
-        for(Player nearbyPlayer : nearbyPlayers) removeViewerPlayer(nearbyPlayer);
-
-        if(pose == Pose.SLEEPING && gSitMain.getConfigService().P_LAY_NIGHT_SKIP) seatPlayer.setSleepingIgnored(false);
-
-        if(!serverPlayer.activeEffects.containsKey(MobEffects.INVISIBILITY)) serverPlayer.setInvisible(false);
-
-        setEquipmentVisibility(true);
-
-        serverPlayer.getEntityData().set(EntityDataSerializers.COMPOUND_TAG.createAccessor(19), playerNpc.getEntityData().get(EntityDataSerializers.COMPOUND_TAG.createAccessor(19)));
-        serverPlayer.getEntityData().set(EntityDataSerializers.COMPOUND_TAG.createAccessor(20), playerNpc.getEntityData().get(EntityDataSerializers.COMPOUND_TAG.createAccessor(20)));
-
-        serverPlayer.setGlowingTag(playerNpc.hasGlowingTag());
-    }
-
-    private void removeViewerPlayer(Player player) {
-        ServerPlayer removePlayer = ((CraftPlayer) player).getHandle();
-        sendPacket(removePlayer, removeNpcInfoPacket);
-        sendPacket(removePlayer, removeNpcPacket);
-
-        player.sendBlockChange(blockLocation, bedBlock.getBlockData());
-    }
-
-    private Set<Player> getNearbyPlayers() {
-        Set<Player> currentNearbyPlayers = new HashSet<>();
-        seatPlayer.getWorld().getPlayers().stream().filter(player -> seat.getLocation().distanceSquared(player.getLocation()) <= renderRange * renderRange && player.canSee(seatPlayer)).forEach(currentNearbyPlayers::add);
-        return currentNearbyPlayers;
-    }
-
-    private void startUpdate() {
-        taskId = gSitMain.getTaskService().runAtFixedRate(() -> {
+        ((SeatEntity) ((CraftEntity) seat.getSeatEntity()).getHandle()).setRunnable(() -> {
             Set<Player> currentNearbyPlayers = getNearbyPlayers();
 
             for(Player nearbyPlayer : currentNearbyPlayers) {
@@ -273,10 +215,44 @@ public class GPose implements IGPose {
             if((!gSitMain.getConfigService().P_LAY_SNORING_NIGHT_ONLY || (tick >= 12500 && tick <= 23500)) && tick % 90 == 0) {
                 for(Player nearbyPlayer : this.nearbyPlayers) nearbyPlayer.playSound(seat.getLocation(), Sound.ENTITY_FOX_SLEEP, SoundCategory.PLAYERS, 1.5f, 0);
             }
-        }, false, 5, 1);
+        });
     }
 
-    private void stopUpdate() { gSitMain.getTaskService().cancel(taskId); }
+    private void addViewerPlayer(Player player) {
+        sendPacket(player, bundle);
+    }
+
+    @Override
+    public void remove() {
+        ((SeatEntity) ((CraftEntity) seat.getSeatEntity()).getHandle()).setRunnable(null);
+
+        HandlerList.unregisterAll(listener);
+        seatPlayer.removeScoreboardTag(PoseService.POSE_TAG);
+
+        for(Player nearbyPlayer : nearbyPlayers) removeViewerPlayer(nearbyPlayer);
+
+        if(pose == Pose.SLEEPING && gSitMain.getConfigService().P_LAY_NIGHT_SKIP) seatPlayer.setSleepingIgnored(false);
+
+        if(!serverPlayer.activeEffects.containsKey(MobEffects.INVISIBILITY)) serverPlayer.setInvisible(false);
+
+        setEquipmentVisibility(true);
+
+        serverPlayer.getEntityData().set(EntityDataSerializers.OPTIONAL_UNSIGNED_INT.createAccessor(19), leftShoulderCache);
+        serverPlayer.getEntityData().set(EntityDataSerializers.OPTIONAL_UNSIGNED_INT.createAccessor(20), rightShoulderCache);
+
+        serverPlayer.setGlowingTag(mannequin.hasGlowingTag());
+    }
+
+    private void removeViewerPlayer(Player player) {
+        ServerPlayer removePlayer = ((CraftPlayer) player).getHandle();
+        sendPacket(removePlayer, removeNpcPacket);
+    }
+
+    private Set<Player> getNearbyPlayers() {
+        Set<Player> currentNearbyPlayers = new HashSet<>();
+        seatPlayer.getWorld().getPlayers().stream().filter(player -> seat.getLocation().distanceSquared(player.getLocation()) <= renderRange * renderRange && player.canSee(seatPlayer)).forEach(currentNearbyPlayers::add);
+        return currentNearbyPlayers;
+    }
 
     private float fixYaw(float yaw) { return (yaw < 0f ? 360f + yaw : yaw) % 360f; }
 
@@ -286,8 +262,8 @@ public class GPose implements IGPose {
             if(directionCache == fixedRotation) return;
             directionCache = fixedRotation;
 
-            ClientboundRotateHeadPacket rotateHeadPacket = new ClientboundRotateHeadPacket(playerNpc, fixedRotation);
-            ClientboundMoveEntityPacket.PosRot moveEntityPacket = new ClientboundMoveEntityPacket.PosRot(playerNpc.getId(), (short) 0, (short) 0, (short) 0, fixedRotation, (byte) 0, true);
+            ClientboundRotateHeadPacket rotateHeadPacket = new ClientboundRotateHeadPacket(mannequin, fixedRotation);
+            ClientboundMoveEntityPacket.PosRot moveEntityPacket = new ClientboundMoveEntityPacket.PosRot(mannequin.getId(), (short) 0, (short) 0, (short) 0, fixedRotation, (byte) 0, true);
 
             for(Player nearbyPlayer : nearbyPlayers) {
                 ServerPlayer player = ((CraftPlayer) nearbyPlayer).getHandle();
@@ -308,22 +284,27 @@ public class GPose implements IGPose {
 
         playerYaw = fixYaw(playerYaw);
 
-        byte fixedRotation = getFixedRotation(playerYaw >= 315 ? playerYaw - 360 : playerYaw <= 45 ? playerYaw : playerYaw >= 180 ? -45 : 45);
+        playerYaw = playerYaw >= 315 ? playerYaw - 360 : playerYaw <= 45 ? playerYaw : playerYaw >= 180 ? -45 : 45;
 
-        ClientboundRotateHeadPacket rotateHeadPacket = new ClientboundRotateHeadPacket(playerNpc, fixedRotation);
+        if(direction == Direction.SOUTH) playerYaw -= 90;
+        if(direction == Direction.WEST) playerYaw += 180;
+        if(direction == Direction.NORTH) playerYaw += 90;
+
+        ClientboundRotateHeadPacket rotateHeadPacket = new ClientboundRotateHeadPacket(mannequin, getFixedRotation(playerYaw));
 
         for(Player nearbyPlayer : nearbyPlayers) sendPacket(nearbyPlayer, rotateHeadPacket);
     }
 
     private void updateSkin() {
-        playerNpc.setInvisible(serverPlayer.activeEffects.containsKey(MobEffects.INVISIBILITY));
+        mannequin.setInvisible(serverPlayer.activeEffects.containsKey(MobEffects.INVISIBILITY));
 
-        SynchedEntityData entityData = playerNpc.getEntityData();
-        entityData.set(EntityDataSerializers.BYTE.createAccessor(17), serverPlayer.getEntityData().get(EntityDataSerializers.BYTE.createAccessor(17)));
-        entityData.set(EntityDataSerializers.BYTE.createAccessor(18), serverPlayer.getEntityData().get(EntityDataSerializers.BYTE.createAccessor(18)));
+        SynchedEntityData entityData = mannequin.getEntityData();
+        mannequin.getEntityData().set(EntityDataSerializers.BYTE.createAccessor(15), serverPlayer.getEntityData().get(EntityDataSerializers.BYTE.createAccessor(15)));
+        mannequin.getEntityData().set(EntityDataSerializers.BYTE.createAccessor(16), serverPlayer.getEntityData().get(EntityDataSerializers.BYTE.createAccessor(16)));
+        mannequin.setProfile(ResolvableProfile.createResolved(serverPlayer.gameProfile));
         if(!entityData.isDirty()) return;
 
-        ClientboundSetEntityDataPacket entityDataPacket = new ClientboundSetEntityDataPacket(playerNpc.getId(), entityData.packDirty());
+        ClientboundSetEntityDataPacket entityDataPacket = new ClientboundSetEntityDataPacket(mannequin.getId(), entityData.packDirty());
 
         for(Player nearbyPlayer : nearbyPlayers) sendPacket(nearbyPlayer, entityDataPacket);
     }
@@ -344,7 +325,7 @@ public class GPose implements IGPose {
             equipmentList.add(Pair.of(equipmentSlot, itemStack));
         }
 
-        ClientboundSetEquipmentPacket setEquipmentPacket = new ClientboundSetEquipmentPacket(playerNpc.getId(), equipmentList);
+        ClientboundSetEquipmentPacket setEquipmentPacket = new ClientboundSetEquipmentPacket(mannequin.getId(), equipmentList);
 
         for(Player nearbyPlayer : nearbyPlayers) sendPacket(nearbyPlayer, setEquipmentPacket);
 
@@ -365,7 +346,7 @@ public class GPose implements IGPose {
     }
 
     private void playAnimation(int animationId) {
-        ClientboundAnimatePacket animatePacket = new ClientboundAnimatePacket(playerNpc, animationId);
+        ClientboundAnimatePacket animatePacket = new ClientboundAnimatePacket(mannequin, animationId);
         for(Player nearbyPlayer : nearbyPlayers) sendPacket(nearbyPlayer, animatePacket);
     }
 
@@ -376,12 +357,12 @@ public class GPose implements IGPose {
         return (yaw >= 135f || yaw < -135f) ? Direction.NORTH : (yaw >= -135f && yaw < -45f) ? Direction.EAST : (yaw >= -45f && yaw < 45f) ? Direction.SOUTH : yaw >= 45f ? Direction.WEST : Direction.NORTH;
     }
 
-    private ServerPlayer createNPC() {
-        MinecraftServer minecraftServer = ((CraftServer) Bukkit.getServer()).getServer();
-        ServerLevel serverLevel = ((CraftWorld) seat.getLocation().getWorld()).getHandle();
-        GameProfile gameProfile = new GameProfile(UUID.randomUUID(), seatPlayer.getName());
-        gameProfile.getProperties().putAll(serverPlayer.getGameProfile().getProperties());
-        return new ServerPlayer(minecraftServer, serverLevel, gameProfile);
+    private Mannequin createMannequin() {
+        Mannequin playerMannequin = new Mannequin(EntityType.MANNEQUIN, serverPlayer.level());
+        playerMannequin.setProfile(ResolvableProfile.createResolved(serverPlayer.gameProfile));
+        playerMannequin.setHideDescription(true);
+        playerMannequin.setImmovable(true);
+        return playerMannequin;
     }
 
     private void sendPacket(Player player, Packet<?> packet) { sendPacket(((CraftPlayer) player).getHandle(), packet); }
